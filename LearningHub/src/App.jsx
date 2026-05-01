@@ -1,4 +1,4 @@
- import React, { useEffect, useState } from "react";
+ import React, { useEffect, useMemo, useState } from "react";
 import { db, auth } from "./firebase";
 import {
 collection,
@@ -7,6 +7,8 @@ getDocs,
 deleteDoc,
 doc,
 updateDoc,
+query,
+where,
 } from "firebase/firestore";
 import {
 createUserWithEmailAndPassword,
@@ -17,7 +19,7 @@ onAuthStateChanged,
 
 const APP_NAME = "LearningHub";
 const CLOUD_NAME = "diu45f6nj";
-const UPLOAD_PRESET = "learninghub_upload";
+const UPLOAD_PRESET = "learning_upload";
 
 export default function App() {
 const [activePage, setActivePage] = useState("home");
@@ -35,8 +37,7 @@ const [file, setFile] = useState(null);
 
 const [items, setItems] = useState([]);
 const [purchases, setPurchases] = useState([]);
-const [_errors, setErrors] = useState({});
-const [successMessage, setSuccessMessage] = useState("");
+const [message, setMessage] = useState("");
 const [isUploading, setIsUploading] = useState(false);
 const [hoveredId, setHoveredId] = useState(null);
 const [selectedItem, setSelectedItem] = useState(null);
@@ -49,28 +50,48 @@ useEffect(() => {
 const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
 setUser(currentUser);
 await loadItems();
-if (currentUser) await loadPurchases(currentUser.uid);
+
+if (currentUser) {
+await loadPurchases(currentUser.uid);
+} else {
+setPurchases([]);
+}
 });
 
 return () => unsubscribe();
 }, []);
 
 async function loadItems() {
+try {
 const querySnapshot = await getDocs(collection(db, "items"));
 const data = querySnapshot.docs.map((document) => ({
 id: document.id,
 ...document.data(),
 }));
 setItems(data);
+} catch (error) {
+console.error("Fehler beim Laden der Lernblätter:", error);
+}
 }
 
 async function loadPurchases(userId) {
-const querySnapshot = await getDocs(collection(db, "purchases"));
-const data = querySnapshot.docs
-.map((document) => ({ id: document.id, ...document.data() }))
-.filter((purchase) => purchase.buyerId === userId);
+try {
+const purchasesQuery = query(
+collection(db, "purchases"),
+where("buyerId", "==", userId)
+);
+
+const querySnapshot = await getDocs(purchasesQuery);
+
+const data = querySnapshot.docs.map((document) => ({
+id: document.id,
+...document.data(),
+}));
 
 setPurchases(data);
+} catch (error) {
+console.error("Fehler beim Laden der Käufe:", error);
+}
 }
 
 async function handleRegister() {
@@ -81,7 +102,7 @@ setAuthEmail("");
 setAuthPassword("");
 } catch (error) {
 console.error(error);
-setAuthMessage("❌ Registrierung fehlgeschlagen.");
+setAuthMessage("❌ Registrierung fehlgeschlagen. Bitte E-Mail und Passwort prüfen.");
 }
 }
 
@@ -93,7 +114,7 @@ setAuthEmail("");
 setAuthPassword("");
 } catch (error) {
 console.error(error);
-setAuthMessage("❌ Anmeldung fehlgeschlagen.");
+setAuthMessage("❌ Anmeldung fehlgeschlagen. Bitte Zugangsdaten prüfen.");
 }
 }
 
@@ -144,20 +165,30 @@ description.trim() !== "" &&
 Number(price) > 0 &&
 !isUploading;
 
-const myItems = user ? items.filter((item) => item.ownerId === user.uid) : [];
-const newestItems = [...items]
+const myItems = useMemo(() => {
+return user ? items.filter((item) => item.ownerId === user.uid) : [];
+}, [items, user]);
+
+const newestItems = useMemo(() => {
+return [...items]
 .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
 .slice(0, 4);
+}, [items]);
 
 const purchasedItemIds = purchases.map((purchase) => purchase.itemId);
-const downloadedItems = items.filter((item) => purchasedItemIds.includes(item.id));
+
+const downloadedItems = items.filter((item) =>
+purchasedItemIds.includes(item.id)
+);
 
 const purchasedCategories = downloadedItems.map((item) => item.category);
+
 const recommendations = items
 .filter(
 (item) =>
 purchasedCategories.includes(item.category) &&
-!purchasedItemIds.includes(item.id)
+!purchasedItemIds.includes(item.id) &&
+item.ownerId !== user?.uid
 )
 .slice(0, 4);
 
@@ -189,24 +220,30 @@ function formatPrice(value) {
 return new Intl.NumberFormat("de-DE", {
 style: "currency",
 currency: "EUR",
-}).format(Number(value));
+}).format(Number(value || 0));
+}
+
+function clearForm() {
+setTitle("");
+setDescription("");
+setPrice("");
+setCategory("Mathematik");
+setFile(null);
 }
 
 async function handleAdd() {
-const newErrors = {};
+if (!user) {
+setMessage("❌ Bitte zuerst einloggen.");
+return;
+}
 
-if (!user) newErrors.user = "Bitte zuerst einloggen.";
-if (!title.trim()) newErrors.title = "Bitte einen Titel eingeben.";
-if (!description.trim())
-newErrors.description = "Bitte eine Beschreibung eingeben.";
-if (!price) newErrors.price = "Bitte einen Preis eingeben.";
-if (Number(price) <= 0)
-newErrors.price = "Der Preis muss größer als 0 sein.";
-
-setErrors(newErrors);
-if (Object.keys(newErrors).length > 0) return;
+if (!title.trim() || !description.trim() || Number(price) <= 0) {
+setMessage("❌ Bitte Titel, Beschreibung und Preis korrekt ausfüllen.");
+return;
+}
 
 setIsUploading(true);
+setMessage("");
 
 try {
 const uploadedFile = await uploadFileToCloudinary(file);
@@ -226,19 +263,12 @@ rating: 0,
 createdAt: Date.now(),
 });
 
-setTitle("");
-setDescription("");
-setPrice("");
-setCategory("Mathematik");
-setFile(null);
-setErrors({});
-setSuccessMessage("✅ Lernblatt erfolgreich gespeichert.");
-
+clearForm();
+setMessage("✅ Lernblatt erfolgreich gespeichert.");
 await loadItems();
-setTimeout(() => setSuccessMessage(""), 3000);
 } catch (error) {
 console.error(error);
-setSuccessMessage("❌ Fehler beim Speichern oder Hochladen.");
+setMessage("❌ Fehler beim Speichern oder Hochladen.");
 } finally {
 setIsUploading(false);
 }
@@ -255,7 +285,9 @@ return;
 await deleteDoc(doc(db, "items", id));
 await loadItems();
 
-if (selectedItem?.id === id) setSelectedItem(null);
+if (selectedItem?.id === id) {
+setSelectedItem(null);
+}
 }
 
 async function handlePurchase(item) {
@@ -264,6 +296,12 @@ alert("Bitte zuerst einloggen.");
 return;
 }
 
+if (item.ownerId === user.uid) {
+alert("Eigene Lernblätter müssen nicht gekauft werden.");
+return;
+}
+
+try {
 const alreadyPurchased = purchases.some(
 (purchase) => purchase.itemId === item.id
 );
@@ -280,11 +318,15 @@ fileName: item.fileName,
 price: item.price,
 createdAt: Date.now(),
 });
-
-await loadPurchases(user.uid);
 }
 
-alert("Kauf simuliert. Das Lernblatt wurde unter Downloads gespeichert.");
+await loadPurchases(user.uid);
+setActivePage("home");
+alert("✅ Kauf gespeichert. Das Lernblatt erscheint jetzt unter Downloads.");
+} catch (error) {
+console.error("Fehler beim Kaufen:", error);
+alert("❌ Kauf konnte nicht gespeichert werden. Prüfen Sie Firebase-Regeln.");
+}
 }
 
 async function toggleFavorite(id) {
@@ -318,14 +360,22 @@ name.endsWith(".jpg") ||
 name.endsWith(".jpeg") ||
 name.endsWith(".png") ||
 name.endsWith(".webp")
-)
+) {
 return "Bild-Datei";
+}
 
 return "Datei";
 }
 
 function renderFilePreview(item, large = false) {
-if (!item.fileUrl) return null;
+if (!item.fileUrl) {
+return (
+<div style={fileBoxStyle}>
+<div style={{ fontSize: 34 }}>📘</div>
+<strong>Keine Datei hochgeladen</strong>
+</div>
+);
+}
 
 if (item.fileType?.startsWith("image")) {
 return (
@@ -334,7 +384,7 @@ src={item.fileUrl}
 alt="Lernblatt Vorschau"
 style={{
 width: "100%",
-height: large ? 300 : 140,
+height: large ? 300 : 150,
 objectFit: "cover",
 borderRadius: 18,
 marginBottom: 14,
@@ -346,7 +396,7 @@ background: "#f1f5f9",
 
 return (
 <div style={fileBoxStyle}>
-<div style={{ fontSize: large ? 42 : 30, marginBottom: 8 }}>📄</div>
+<div style={{ fontSize: large ? 44 : 32, marginBottom: 8 }}>📄</div>
 <div style={{ fontWeight: "800", marginBottom: 6 }}>
 {getFileLabel(item)}
 </div>
@@ -356,6 +406,13 @@ return (
 <a href={item.fileUrl} target="_blank" rel="noreferrer" style={fileLinkStyle}>
 Datei öffnen
 </a>
+
+{(item.fileName?.toLowerCase().endsWith(".doc") ||
+item.fileName?.toLowerCase().endsWith(".docx")) && (
+<p style={{ ...smallTextStyle, marginTop: 10 }}>
+Hinweis: Word-Dateien können sich zuerst über Microsoft Office Online öffnen.
+</p>
+)}
 </div>
 );
 }
@@ -406,7 +463,7 @@ transform: hoveredId === item.id ? "translateY(-5px)" : "none",
 </button>
 </div>
 
-<h3 style={{ marginTop: 8, marginBottom: 8 }}>{item.title}</h3>
+<h3 style={{ marginTop: 10, marginBottom: 8 }}>{item.title}</h3>
 
 <p style={descriptionTextStyle}>{item.description}</p>
 
@@ -472,34 +529,19 @@ color: activePage === key ? "#ffffff" : "#0f172a",
 {activePage === "home" && (
 <main style={pageContentStyle}>
 <section style={heroStyle}>
-<div>
 <h2 style={{ fontSize: 38, marginBottom: 10 }}>
 Willkommen bei {APP_NAME}
 </h2>
-<p style={{ color: "#475569", fontSize: 17, lineHeight: 1.7 }}>
-Verwalten Sie Uploads, Downloads, neue Lernblätter und
-Empfehlungen in einer modernen Übersicht.
+<p style={{ fontSize: 17, lineHeight: 1.7 }}>
+Ihre Übersicht für neue Lernblätter, Downloads, Uploads und passende Empfehlungen.
 </p>
-</div>
 </section>
 
 <section style={statsGridStyle}>
-<div style={statCardStyle}>
-<strong>{items.length}</strong>
-<span>Neueinstellungen</span>
-</div>
-<div style={statCardStyle}>
-<strong>{downloadedItems.length}</strong>
-<span>Downloads / Käufe</span>
-</div>
-<div style={statCardStyle}>
-<strong>{myItems.length}</strong>
-<span>Eigene Uploads</span>
-</div>
-<div style={statCardStyle}>
-<strong>{recommendations.length}</strong>
-<span>Empfehlungen</span>
-</div>
+<StatCard number={items.length} label="Neueinstellungen" />
+<StatCard number={downloadedItems.length} label="Downloads / Käufe" />
+<StatCard number={myItems.length} label="Eigene Uploads" />
+<StatCard number={recommendations.length} label="Empfehlungen" />
 </section>
 
 <Section title="Neueinstellungen">
@@ -562,10 +604,7 @@ style={inputStyle}
 </select>
 </div>
 
-<p style={smallTextStyle}>
-Gefundene Lernblätter: {filteredItems.length}
-</p>
-
+<p style={smallTextStyle}>Gefundene Lernblätter: {filteredItems.length}</p>
 <CardGrid items={filteredItems} renderCard={renderCard} />
 </Section>
 </main>
@@ -576,7 +615,7 @@ Gefundene Lernblätter: {filteredItems.length}
 <section style={panelStyle}>
 <h2 style={{ marginTop: 0 }}>Lernblatt hochladen</h2>
 
-{successMessage && <p style={successStyle}>{successMessage}</p>}
+{message && <p style={message.includes("✅") ? successStyle : errorStyle}>{message}</p>}
 
 {!user && (
 <p style={infoStyle}>
@@ -596,12 +635,10 @@ placeholder="Beschreibung (max. 100 Wörter)"
 value={description}
 onChange={(e) => {
 const text = e.target.value;
-const words =
-text.trim() === "" ? [] : text.trim().split(/\s+/);
-
+const words = text.trim() === "" ? [] : text.trim().split(/\s+/);
 if (words.length <= 100) setDescription(text);
 }}
-style={{ ...inputStyle, minHeight: 110, resize: "none" }}
+style={{ ...inputStyle, minHeight: 120, resize: "none" }}
 />
 
 <p style={smallTextStyle}>{wordCount} / 100 Wörter</p>
@@ -660,24 +697,19 @@ cursor: formIsValid ? "pointer" : "not-allowed",
 {user ? (
 <>
 <p>
-Eingeloggt als:<br />
+Eingeloggt als:
+<br />
 <strong>{user.email}</strong>
 </p>
 
-<p style={smallTextStyle}>
-Eigene Lernblätter: {myItems.length}
-</p>
+<p style={smallTextStyle}>Eigene Lernblätter: {myItems.length}</p>
 
 <button onClick={handleLogout} style={secondaryButtonStyle}>
 Abmelden
 </button>
 
 <h3 style={{ marginTop: 30 }}>Meine Uploads</h3>
-{myItems.length === 0 ? (
-<Empty text="Sie haben noch keine Lernblätter hochgeladen." />
-) : (
 <CardGrid items={myItems} renderCard={renderCard} />
-)}
 </>
 ) : (
 <>
@@ -717,10 +749,7 @@ Registrieren
 {selectedItem && (
 <div style={modalOverlayStyle}>
 <div style={modalStyle}>
-<button
-onClick={() => setSelectedItem(null)}
-style={closeButtonStyle}
->
+<button onClick={() => setSelectedItem(null)} style={closeButtonStyle}>
 ×
 </button>
 
@@ -782,6 +811,15 @@ return <Empty text="Keine Lernblätter vorhanden." />;
 return <div style={gridStyle}>{items.map((item) => renderCard(item))}</div>;
 }
 
+function StatCard({ number, label }) {
+return (
+<div style={statCardStyle}>
+<strong style={{ fontSize: 30, color: "#2563eb" }}>{number}</strong>
+<span>{label}</span>
+</div>
+);
+}
+
 const appShellStyle = {
 minHeight: "100vh",
 background: "linear-gradient(135deg, #eef2ff 0%, #f8fafc 45%, #ffffff 100%)",
@@ -798,7 +836,7 @@ justifyContent: "space-between",
 alignItems: "center",
 gap: 24,
 padding: "22px 48px",
-background: "rgba(255,255,255,0.9)",
+background: "rgba(255,255,255,0.92)",
 backdropFilter: "blur(14px)",
 borderBottom: "1px solid #e2e8f0",
 };
@@ -896,6 +934,14 @@ borderRadius: 14,
 fontSize: 14,
 };
 
+const errorStyle = {
+background: "#fee2e2",
+color: "#991b1b",
+padding: 12,
+borderRadius: 14,
+fontSize: 14,
+};
+
 const infoStyle = {
 background: "#eff6ff",
 color: "#1d4ed8",
@@ -938,7 +984,7 @@ cursor: "pointer",
 
 const gridStyle = {
 display: "grid",
-gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))",
+gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
 gap: 20,
 };
 
