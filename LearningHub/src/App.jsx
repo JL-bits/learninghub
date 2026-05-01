@@ -19,7 +19,7 @@ onAuthStateChanged,
 
 const APP_NAME = "LearningHub";
 const CLOUD_NAME = "diu45f6nj";
-const UPLOAD_PRESET = "learning_upload";
+const UPLOAD_PRESET = "learninghub_upload";
 
 export default function App() {
 const [activePage, setActivePage] = useState("home");
