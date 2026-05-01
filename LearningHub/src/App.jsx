@@ -15,11 +15,14 @@ signOut,
 onAuthStateChanged,
 } from "firebase/auth";
 
+const APP_NAME = "LearningHub";
 const CLOUD_NAME = "diu45f6nj";
 const UPLOAD_PRESET = "learninghub_upload";
 
 export default function App() {
+const [activePage, setActivePage] = useState("home");
 const [user, setUser] = useState(null);
+
 const [authEmail, setAuthEmail] = useState("");
 const [authPassword, setAuthPassword] = useState("");
 const [authMessage, setAuthMessage] = useState("");
@@ -31,7 +34,8 @@ const [category, setCategory] = useState("Mathematik");
 const [file, setFile] = useState(null);
 
 const [items, setItems] = useState([]);
-const [errors, setErrors] = useState({});
+const [purchases, setPurchases] = useState([]);
+const [_errors, setErrors] = useState({});
 const [successMessage, setSuccessMessage] = useState("");
 const [isUploading, setIsUploading] = useState(false);
 const [hoveredId, setHoveredId] = useState(null);
@@ -42,28 +46,31 @@ const [filterCategory, setFilterCategory] = useState("Alle");
 const [sortOrder, setSortOrder] = useState("neu");
 
 useEffect(() => {
-const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
 setUser(currentUser);
+await loadItems();
+if (currentUser) await loadPurchases(currentUser.uid);
 });
 
 return () => unsubscribe();
 }, []);
 
-useEffect(() => {
-loadItems();
-}, []);
-
 async function loadItems() {
-try {
 const querySnapshot = await getDocs(collection(db, "items"));
 const data = querySnapshot.docs.map((document) => ({
 id: document.id,
 ...document.data(),
 }));
 setItems(data);
-} catch (error) {
-console.error("Fehler beim Laden:", error);
 }
+
+async function loadPurchases(userId) {
+const querySnapshot = await getDocs(collection(db, "purchases"));
+const data = querySnapshot.docs
+.map((document) => ({ id: document.id, ...document.data() }))
+.filter((purchase) => purchase.buyerId === userId);
+
+setPurchases(data);
 }
 
 async function handleRegister() {
@@ -73,8 +80,8 @@ setAuthMessage("✅ Konto erfolgreich erstellt.");
 setAuthEmail("");
 setAuthPassword("");
 } catch (error) {
-setAuthMessage("❌ Registrierung fehlgeschlagen.");
 console.error(error);
+setAuthMessage("❌ Registrierung fehlgeschlagen.");
 }
 }
 
@@ -85,13 +92,14 @@ setAuthMessage("✅ Erfolgreich angemeldet.");
 setAuthEmail("");
 setAuthPassword("");
 } catch (error) {
-setAuthMessage("❌ Anmeldung fehlgeschlagen.");
 console.error(error);
+setAuthMessage("❌ Anmeldung fehlgeschlagen.");
 }
 }
 
 async function handleLogout() {
 await signOut(auth);
+setPurchases([]);
 setAuthMessage("Sie wurden abgemeldet.");
 }
 
@@ -136,8 +144,22 @@ description.trim() !== "" &&
 Number(price) > 0 &&
 !isUploading;
 
-const favoriteCount = items.filter((item) => item.favorite).length;
 const myItems = user ? items.filter((item) => item.ownerId === user.uid) : [];
+const newestItems = [...items]
+.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
+.slice(0, 4);
+
+const purchasedItemIds = purchases.map((purchase) => purchase.itemId);
+const downloadedItems = items.filter((item) => purchasedItemIds.includes(item.id));
+
+const purchasedCategories = downloadedItems.map((item) => item.category);
+const recommendations = items
+.filter(
+(item) =>
+purchasedCategories.includes(item.category) &&
+!purchasedItemIds.includes(item.id)
+)
+.slice(0, 4);
 
 const filteredItems = items
 .filter((item) => {
@@ -157,10 +179,9 @@ return matchesSearch && matchesCategory;
 .sort((a, b) => {
 if (sortOrder === "preis-auf") return Number(a.price) - Number(b.price);
 if (sortOrder === "preis-ab") return Number(b.price) - Number(a.price);
-if (sortOrder === "favoriten")
-return Number(b.favorite) - Number(a.favorite);
 if (sortOrder === "bewertung")
 return Number(b.rating || 0) - Number(a.rating || 0);
+
 return Number(b.createdAt || 0) - Number(a.createdAt || 0);
 });
 
@@ -183,7 +204,6 @@ if (Number(price) <= 0)
 newErrors.price = "Der Preis muss größer als 0 sein.";
 
 setErrors(newErrors);
-
 if (Object.keys(newErrors).length > 0) return;
 
 setIsUploading(true);
@@ -215,10 +235,9 @@ setErrors({});
 setSuccessMessage("✅ Lernblatt erfolgreich gespeichert.");
 
 await loadItems();
-
 setTimeout(() => setSuccessMessage(""), 3000);
 } catch (error) {
-console.error("Fehler beim Speichern:", error);
+console.error(error);
 setSuccessMessage("❌ Fehler beim Speichern oder Hochladen.");
 } finally {
 setIsUploading(false);
@@ -233,16 +252,39 @@ alert("Sie können nur eigene Lernblätter löschen.");
 return;
 }
 
-try {
 await deleteDoc(doc(db, "items", id));
 await loadItems();
 
-if (selectedItem?.id === id) {
-setSelectedItem(null);
+if (selectedItem?.id === id) setSelectedItem(null);
 }
-} catch (error) {
-console.error("Fehler beim Löschen:", error);
+
+async function handlePurchase(item) {
+if (!user) {
+alert("Bitte zuerst einloggen.");
+return;
 }
+
+const alreadyPurchased = purchases.some(
+(purchase) => purchase.itemId === item.id
+);
+
+if (!alreadyPurchased) {
+await addDoc(collection(db, "purchases"), {
+buyerId: user.uid,
+buyerEmail: user.email,
+itemId: item.id,
+title: item.title,
+category: item.category,
+fileUrl: item.fileUrl,
+fileName: item.fileName,
+price: item.price,
+createdAt: Date.now(),
+});
+
+await loadPurchases(user.uid);
+}
+
+alert("Kauf simuliert. Das Lernblatt wurde unter Downloads gespeichert.");
 }
 
 async function toggleFavorite(id) {
@@ -266,6 +308,7 @@ await loadItems();
 
 function getFileLabel(item) {
 if (!item.fileName) return "Datei";
+
 const name = item.fileName.toLowerCase();
 
 if (name.endsWith(".pdf")) return "PDF-Datei";
@@ -291,10 +334,10 @@ src={item.fileUrl}
 alt="Lernblatt Vorschau"
 style={{
 width: "100%",
-height: large ? 300 : 130,
+height: large ? 300 : 140,
 objectFit: "cover",
-borderRadius: 12,
-marginBottom: 12,
+borderRadius: 18,
+marginBottom: 14,
 background: "#f1f5f9",
 }}
 />
@@ -303,98 +346,234 @@ background: "#f1f5f9",
 
 return (
 <div style={fileBoxStyle}>
-<div style={{ fontSize: large ? 42 : 28, marginBottom: 8 }}>📄</div>
-
-<div style={{ fontWeight: "bold", marginBottom: 6 }}>
+<div style={{ fontSize: large ? 42 : 30, marginBottom: 8 }}>📄</div>
+<div style={{ fontWeight: "800", marginBottom: 6 }}>
 {getFileLabel(item)}
 </div>
-
-<div style={{ fontSize: 13, color: "#64748b", marginBottom: 10 }}>
+<div style={{ fontSize: 13, color: "#64748b", marginBottom: 12 }}>
 {item.fileName || "Datei"}
 </div>
-
-<a
-href={item.fileUrl}
-target="_blank"
-rel="noreferrer"
-style={fileLinkStyle}
->
+<a href={item.fileUrl} target="_blank" rel="noreferrer" style={fileLinkStyle}>
 Datei öffnen
 </a>
-
-{(item.fileName?.toLowerCase().endsWith(".doc") ||
-item.fileName?.toLowerCase().endsWith(".docx")) && (
-<p style={{ ...smallTextStyle, marginTop: 10 }}>
-Hinweis: Word-Dateien können sich zuerst über Microsoft Office
-Online öffnen.
-</p>
-)}
 </div>
 );
 }
 
+function renderStars(item) {
 return (
-<div style={pageStyle}>
-<aside style={{ width: "28%" }}>
-<h1 style={logoStyle}>LearningHub</h1>
-
-<p style={subtitleStyle}>
-Lernblätter hochladen, anbieten und testen
-</p>
-
-<section style={sideBoxStyle}>
-<h3>Benutzerbereich</h3>
-
-{user ? (
-<>
-<p>
-Eingeloggt als:
-<br />
-<strong>{user.email}</strong>
-</p>
-
-<p style={smallTextStyle}>Eigene Lernblätter: {myItems.length}</p>
-
-<button onClick={handleLogout} style={secondaryButtonStyle}>
-Abmelden
-</button>
-</>
-) : (
-<>
-<input
-placeholder="E-Mail"
-value={authEmail}
-onChange={(e) => setAuthEmail(e.target.value)}
-style={inputStyle}
-/>
-
-<input
-type="password"
-placeholder="Passwort"
-value={authPassword}
-onChange={(e) => setAuthPassword(e.target.value)}
-style={inputStyle}
-/>
-
-<button onClick={handleLogin} style={mainSmallButtonStyle}>
-Einloggen
-</button>
-
+<div style={{ marginBottom: 12 }}>
+{[1, 2, 3, 4, 5].map((star) => (
 <button
-onClick={handleRegister}
-style={{ ...secondaryButtonStyle, marginTop: 8 }}
+key={star}
+onClick={() => setRating(item.id, star)}
+style={{
+border: "none",
+background: "transparent",
+cursor: "pointer",
+fontSize: 20,
+color: star <= (item.rating || 0) ? "#f59e0b" : "#cbd5e1",
+}}
 >
-Registrieren
+★
+</button>
+))}
+</div>
+);
+}
+
+function renderCard(item) {
+return (
+<article
+key={item.id}
+onMouseEnter={() => setHoveredId(item.id)}
+onMouseLeave={() => setHoveredId(null)}
+style={{
+...cardStyle,
+boxShadow:
+hoveredId === item.id
+? "0 18px 38px rgba(15,23,42,0.16)"
+: "0 8px 24px rgba(15,23,42,0.08)",
+transform: hoveredId === item.id ? "translateY(-5px)" : "none",
+}}
+>
+{renderFilePreview(item)}
+
+<div style={rowBetweenStyle}>
+<span style={categoryStyle}>{item.category}</span>
+<button onClick={() => toggleFavorite(item.id)} style={favoriteButtonStyle}>
+{item.favorite ? "❤️" : "🤍"}
+</button>
+</div>
+
+<h3 style={{ marginTop: 8, marginBottom: 8 }}>{item.title}</h3>
+
+<p style={descriptionTextStyle}>{item.description}</p>
+
+<p style={smallTextStyle}>
+Von: <strong>{item.ownerEmail || "Unbekannt"}</strong>
+</p>
+
+{renderStars(item)}
+
+<strong style={priceStyle}>{formatPrice(item.price)}</strong>
+
+<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+<button onClick={() => setSelectedItem(item)} style={detailButtonStyle}>
+Details
 </button>
 
-{authMessage && <p style={smallTextStyle}>{authMessage}</p>}
-{errors.user && <p style={errorStyle}>{errors.user}</p>}
-</>
-)}
-</section>
-</aside>
+<button onClick={() => handlePurchase(item)} style={buyButtonStyle}>
+Kaufen
+</button>
 
-<main style={panelStyle}>
+{user && item.ownerId === user.uid && (
+<button onClick={() => handleDelete(item.id)} style={deleteButtonStyle}>
+Löschen
+</button>
+)}
+</div>
+</article>
+);
+}
+
+return (
+<div style={appShellStyle}>
+<header style={topNavStyle}>
+<div>
+<h1 style={brandStyle}>{APP_NAME}</h1>
+<p style={{ margin: 0, color: "#64748b" }}>
+Digitale Lernblätter einfach hochladen, finden und nutzen
+</p>
+</div>
+
+<nav style={navButtonGroupStyle}>
+{[
+["home", "Home"],
+["market", "Marktplatz"],
+["upload", "Hochladen"],
+["account", "Mein Bereich"],
+].map(([key, label]) => (
+<button
+key={key}
+onClick={() => setActivePage(key)}
+style={{
+...navButtonStyle,
+background: activePage === key ? "#2563eb" : "#ffffff",
+color: activePage === key ? "#ffffff" : "#0f172a",
+}}
+>
+{label}
+</button>
+))}
+</nav>
+</header>
+
+{activePage === "home" && (
+<main style={pageContentStyle}>
+<section style={heroStyle}>
+<div>
+<h2 style={{ fontSize: 38, marginBottom: 10 }}>
+Willkommen bei {APP_NAME}
+</h2>
+<p style={{ color: "#475569", fontSize: 17, lineHeight: 1.7 }}>
+Verwalten Sie Uploads, Downloads, neue Lernblätter und
+Empfehlungen in einer modernen Übersicht.
+</p>
+</div>
+</section>
+
+<section style={statsGridStyle}>
+<div style={statCardStyle}>
+<strong>{items.length}</strong>
+<span>Neueinstellungen</span>
+</div>
+<div style={statCardStyle}>
+<strong>{downloadedItems.length}</strong>
+<span>Downloads / Käufe</span>
+</div>
+<div style={statCardStyle}>
+<strong>{myItems.length}</strong>
+<span>Eigene Uploads</span>
+</div>
+<div style={statCardStyle}>
+<strong>{recommendations.length}</strong>
+<span>Empfehlungen</span>
+</div>
+</section>
+
+<Section title="Neueinstellungen">
+<CardGrid items={newestItems} renderCard={renderCard} />
+</Section>
+
+<Section title="Ihre Downloads">
+{downloadedItems.length === 0 ? (
+<Empty text="Noch keine gekauften oder gespeicherten Lernblätter." />
+) : (
+<CardGrid items={downloadedItems} renderCard={renderCard} />
+)}
+</Section>
+
+<Section title="Empfehlungen für Sie">
+{recommendations.length === 0 ? (
+<Empty text="Empfehlungen erscheinen, sobald Sie ein Lernblatt kaufen." />
+) : (
+<CardGrid items={recommendations} renderCard={renderCard} />
+)}
+</Section>
+</main>
+)}
+
+{activePage === "market" && (
+<main style={pageContentStyle}>
+<Section title="Marktplatz">
+<div style={filterBarStyle}>
+<input
+placeholder="Lernblatt, Fach oder Anbieterin suchen..."
+value={search}
+onChange={(e) => setSearch(e.target.value)}
+style={inputStyle}
+/>
+
+<select
+value={filterCategory}
+onChange={(e) => setFilterCategory(e.target.value)}
+style={inputStyle}
+>
+<option>Alle</option>
+<option>Mathematik</option>
+<option>Biologie</option>
+<option>Deutsch</option>
+<option>Geschichte</option>
+<option>Englisch</option>
+<option>Physik</option>
+<option>Chemie</option>
+</select>
+
+<select
+value={sortOrder}
+onChange={(e) => setSortOrder(e.target.value)}
+style={inputStyle}
+>
+<option value="neu">Neueste zuerst</option>
+<option value="preis-auf">Preis aufsteigend</option>
+<option value="preis-ab">Preis absteigend</option>
+<option value="bewertung">Beste Bewertung zuerst</option>
+</select>
+</div>
+
+<p style={smallTextStyle}>
+Gefundene Lernblätter: {filteredItems.length}
+</p>
+
+<CardGrid items={filteredItems} renderCard={renderCard} />
+</Section>
+</main>
+)}
+
+{activePage === "upload" && (
+<main style={pageContentStyle}>
+<section style={panelStyle}>
 <h2 style={{ marginTop: 0 }}>Lernblatt hochladen</h2>
 
 {successMessage && <p style={successStyle}>{successMessage}</p>}
@@ -408,41 +587,24 @@ Bitte melden Sie sich zuerst mit E-Mail und Passwort an.
 <input
 placeholder="Titel"
 value={title}
-onChange={(e) => {
-setTitle(e.target.value);
-setErrors((prev) => ({ ...prev, title: "" }));
-}}
-style={{
-...inputStyle,
-border: errors.title ? "1px solid #dc2626" : "1px solid #ddd",
-}}
+onChange={(e) => setTitle(e.target.value)}
+style={inputStyle}
 />
-{errors.title && <p style={errorStyle}>{errors.title}</p>}
 
 <textarea
 placeholder="Beschreibung (max. 100 Wörter)"
 value={description}
 onChange={(e) => {
 const text = e.target.value;
-const words = text.trim() === "" ? [] : text.trim().split(/\s+/);
+const words =
+text.trim() === "" ? [] : text.trim().split(/\s+/);
 
-if (words.length <= 100) {
-setDescription(text);
-setErrors((prev) => ({ ...prev, description: "" }));
-}
+if (words.length <= 100) setDescription(text);
 }}
-style={{
-...inputStyle,
-minHeight: 90,
-resize: "none",
-border: errors.description
-? "1px solid #dc2626"
-: "1px solid #ddd",
-}}
+style={{ ...inputStyle, minHeight: 110, resize: "none" }}
 />
 
 <p style={smallTextStyle}>{wordCount} / 100 Wörter</p>
-{errors.description && <p style={errorStyle}>{errors.description}</p>}
 
 <input
 type="number"
@@ -450,16 +612,9 @@ min="0.01"
 step="0.01"
 placeholder="Preis (€)"
 value={price}
-onChange={(e) => {
-setPrice(e.target.value);
-setErrors((prev) => ({ ...prev, price: "" }));
-}}
-style={{
-...inputStyle,
-border: errors.price ? "1px solid #dc2626" : "1px solid #ddd",
-}}
+onChange={(e) => setPrice(e.target.value)}
+style={inputStyle}
 />
-{errors.price && <p style={errorStyle}>{errors.price}</p>}
 
 <select
 value={category}
@@ -493,155 +648,71 @@ cursor: formIsValid ? "pointer" : "not-allowed",
 >
 {isUploading ? "Wird gespeichert..." : "Lernblatt speichern"}
 </button>
+</section>
 </main>
+)}
 
-<section
-style={{
-...panelStyle,
-width: "40%",
-maxHeight: "85vh",
-overflowY: "auto",
-}}
->
-<h2 style={{ marginTop: 0 }}>Marktplatz</h2>
+{activePage === "account" && (
+<main style={pageContentStyle}>
+<section style={panelStyle}>
+<h2 style={{ marginTop: 0 }}>Mein Bereich</h2>
 
+{user ? (
+<>
+<p>
+Eingeloggt als:<br />
+<strong>{user.email}</strong>
+</p>
+
+<p style={smallTextStyle}>
+Eigene Lernblätter: {myItems.length}
+</p>
+
+<button onClick={handleLogout} style={secondaryButtonStyle}>
+Abmelden
+</button>
+
+<h3 style={{ marginTop: 30 }}>Meine Uploads</h3>
+{myItems.length === 0 ? (
+<Empty text="Sie haben noch keine Lernblätter hochgeladen." />
+) : (
+<CardGrid items={myItems} renderCard={renderCard} />
+)}
+</>
+) : (
+<>
 <input
-placeholder="Lernblatt, Fach oder Anbieterin suchen..."
-value={search}
-onChange={(e) => setSearch(e.target.value)}
+placeholder="E-Mail"
+value={authEmail}
+onChange={(e) => setAuthEmail(e.target.value)}
 style={inputStyle}
 />
 
-<select
-value={filterCategory}
-onChange={(e) => setFilterCategory(e.target.value)}
+<input
+type="password"
+placeholder="Passwort"
+value={authPassword}
+onChange={(e) => setAuthPassword(e.target.value)}
 style={inputStyle}
+/>
+
+<button onClick={handleLogin} style={mainSmallButtonStyle}>
+Einloggen
+</button>
+
+<button
+onClick={handleRegister}
+style={{ ...secondaryButtonStyle, marginTop: 8 }}
 >
-<option>Alle</option>
-<option>Mathematik</option>
-<option>Biologie</option>
-<option>Deutsch</option>
-<option>Geschichte</option>
-<option>Englisch</option>
-<option>Physik</option>
-<option>Chemie</option>
-</select>
+Registrieren
+</button>
 
-<select
-value={sortOrder}
-onChange={(e) => setSortOrder(e.target.value)}
-style={inputStyle}
->
-<option value="neu">Neueste zuerst</option>
-<option value="preis-auf">Preis aufsteigend</option>
-<option value="preis-ab">Preis absteigend</option>
-<option value="favoriten">Favoriten zuerst</option>
-<option value="bewertung">Beste Bewertung zuerst</option>
-</select>
-
-<p style={smallTextStyle}>
-Gefundene Lernblätter: {filteredItems.length} | Favoriten:{" "}
-{favoriteCount}
-</p>
-
-{items.length === 0 && (
-<div style={emptyStateStyle}>
-<div style={{ fontSize: 36 }}>📚</div>
-<h3>Noch keine Lernblätter vorhanden</h3>
-<p>Erstellen Sie links Ihr erstes Lernblatt.</p>
-</div>
+{authMessage && <p style={smallTextStyle}>{authMessage}</p>}
+</>
 )}
-
-{items.length > 0 && filteredItems.length === 0 && (
-<div style={emptyStateStyle}>
-<div style={{ fontSize: 36 }}>🔍</div>
-<h3>Keine passenden Ergebnisse</h3>
-<p>Bitte ändern Sie Suche oder Filter.</p>
-</div>
-)}
-
-<div style={gridStyle}>
-{filteredItems.map((item) => (
-<article
-key={item.id}
-onMouseEnter={() => setHoveredId(item.id)}
-onMouseLeave={() => setHoveredId(null)}
-style={{
-...cardStyle,
-boxShadow:
-hoveredId === item.id
-? "0 10px 24px rgba(0,0,0,0.14)"
-: "0 4px 14px rgba(0,0,0,0.08)",
-transform: hoveredId === item.id ? "translateY(-4px)" : "none",
-}}
->
-{renderFilePreview(item)}
-
-<div style={categoryStyle}>{item.category}</div>
-
-<button
-onClick={() => toggleFavorite(item.id)}
-style={favoriteButtonStyle}
->
-{item.favorite ? "❤️" : "🤍"}
-</button>
-
-<h3 style={{ marginTop: 0, marginBottom: 8 }}>{item.title}</h3>
-
-<p style={descriptionTextStyle}>{item.description}</p>
-
-<p style={smallTextStyle}>
-Von: <strong>{item.ownerEmail || "Unbekannt"}</strong>
-</p>
-
-<div style={{ marginBottom: 10 }}>
-{[1, 2, 3, 4, 5].map((star) => (
-<button
-key={star}
-onClick={() => setRating(item.id, star)}
-style={{
-border: "none",
-background: "transparent",
-cursor: "pointer",
-fontSize: 20,
-color: star <= (item.rating || 0) ? "#f59e0b" : "#cbd5e1",
-}}
->
-★
-</button>
-))}
-</div>
-
-<strong style={priceStyle}>{formatPrice(item.price)}</strong>
-
-<div style={{ display: "flex", gap: 8 }}>
-<button
-onClick={() => setSelectedItem(item)}
-style={detailButtonStyle}
->
-Details
-</button>
-
-<button
-onClick={() => alert("Kauf simuliert")}
-style={buyButtonStyle}
->
-Kaufen
-</button>
-
-{user && item.ownerId === user.uid && (
-<button
-onClick={() => handleDelete(item.id)}
-style={deleteButtonStyle}
->
-Löschen
-</button>
-)}
-</div>
-</article>
-))}
-</div>
 </section>
+</main>
+)}
 
 {selectedItem && (
 <div style={modalOverlayStyle}>
@@ -655,7 +726,7 @@ style={closeButtonStyle}
 
 {renderFilePreview(selectedItem, true)}
 
-<div style={categoryStyle}>{selectedItem.category}</div>
+<span style={categoryStyle}>{selectedItem.category}</span>
 
 <h2>{selectedItem.title}</h2>
 
@@ -673,7 +744,7 @@ Anbieterin oder Anbieter:{" "}
 </p>
 
 <button
-onClick={() => alert("Kauf simuliert")}
+onClick={() => handlePurchase(selectedItem)}
 style={buyLargeButtonStyle}
 >
 Kaufen
@@ -685,55 +756,131 @@ Kaufen
 );
 }
 
-const pageStyle = {
-display: "flex",
-gap: 40,
-padding: 50,
-maxWidth: 1300,
-margin: "0 auto",
-background: "#f8fafc",
+function Section({ title, children }) {
+return (
+<section style={panelStyle}>
+<h2 style={{ marginTop: 0 }}>{title}</h2>
+{children}
+</section>
+);
+}
+
+function Empty({ text }) {
+return (
+<div style={emptyStateStyle}>
+<div style={{ fontSize: 36 }}>📚</div>
+<p>{text}</p>
+</div>
+);
+}
+
+function CardGrid({ items, renderCard }) {
+if (!items || items.length === 0) {
+return <Empty text="Keine Lernblätter vorhanden." />;
+}
+
+return <div style={gridStyle}>{items.map((item) => renderCard(item))}</div>;
+}
+
+const appShellStyle = {
 minHeight: "100vh",
+background: "linear-gradient(135deg, #eef2ff 0%, #f8fafc 45%, #ffffff 100%)",
 fontFamily: "Arial, sans-serif",
+color: "#0f172a",
 };
 
-const logoStyle = {
-fontSize: 52,
-marginTop: 20,
-marginBottom: 10,
+const topNavStyle = {
+position: "sticky",
+top: 0,
+zIndex: 50,
+display: "flex",
+justifyContent: "space-between",
+alignItems: "center",
+gap: 24,
+padding: "22px 48px",
+background: "rgba(255,255,255,0.9)",
+backdropFilter: "blur(14px)",
+borderBottom: "1px solid #e2e8f0",
 };
 
-const subtitleStyle = {
-color: "#64748b",
-fontSize: 18,
-marginTop: 20,
-lineHeight: 1.5,
+const brandStyle = {
+margin: 0,
+fontSize: 34,
+fontWeight: 900,
+color: "#1d4ed8",
+};
+
+const navButtonGroupStyle = {
+display: "flex",
+gap: 10,
+flexWrap: "wrap",
+};
+
+const navButtonStyle = {
+border: "1px solid #dbeafe",
+padding: "10px 16px",
+borderRadius: 999,
+cursor: "pointer",
+fontWeight: 700,
+boxShadow: "0 4px 10px rgba(15,23,42,0.06)",
+};
+
+const pageContentStyle = {
+maxWidth: 1280,
+margin: "0 auto",
+padding: 40,
+display: "grid",
+gap: 24,
+};
+
+const heroStyle = {
+padding: 34,
+borderRadius: 28,
+background: "linear-gradient(135deg, #2563eb, #7c3aed)",
+color: "white",
+boxShadow: "0 22px 50px rgba(37,99,235,0.25)",
+};
+
+const statsGridStyle = {
+display: "grid",
+gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+gap: 18,
+};
+
+const statCardStyle = {
+background: "white",
+borderRadius: 22,
+padding: 22,
+boxShadow: "0 12px 30px rgba(15,23,42,0.08)",
+display: "grid",
+gap: 8,
 };
 
 const panelStyle = {
-width: "32%",
-background: "#ffffff",
-padding: 25,
-borderRadius: 18,
-boxShadow: "0 4px 16px rgba(0,0,0,0.08)",
+background: "rgba(255,255,255,0.95)",
+padding: 26,
+borderRadius: 24,
+boxShadow: "0 14px 36px rgba(15,23,42,0.08)",
+border: "1px solid #e2e8f0",
 };
 
-const sideBoxStyle = {
-marginTop: 30,
-background: "#ffffff",
-padding: 20,
-borderRadius: 18,
-boxShadow: "0 4px 16px rgba(0,0,0,0.08)",
+const filterBarStyle = {
+display: "grid",
+gridTemplateColumns: "2fr 1fr 1fr",
+gap: 12,
+marginBottom: 16,
 };
 
 const inputStyle = {
 display: "block",
-marginBottom: 8,
-padding: 12,
+marginBottom: 10,
+padding: 13,
 width: "100%",
 boxSizing: "border-box",
-borderRadius: 10,
-border: "1px solid #ddd",
+borderRadius: 14,
+border: "1px solid #cbd5e1",
 outline: "none",
+background: "white",
 };
 
 const smallTextStyle = {
@@ -741,34 +888,26 @@ color: "#64748b",
 fontSize: 14,
 };
 
-const errorStyle = {
-color: "#dc2626",
-fontSize: 12,
-marginTop: 0,
-marginBottom: 10,
+const successStyle = {
+background: "#dcfce7",
+color: "#166534",
+padding: 12,
+borderRadius: 14,
+fontSize: 14,
 };
 
 const infoStyle = {
 background: "#eff6ff",
 color: "#1d4ed8",
-padding: 10,
-borderRadius: 10,
-fontSize: 13,
-};
-
-const successStyle = {
-background: "#dcfce7",
-color: "#166534",
-padding: 10,
-borderRadius: 10,
-fontSize: 13,
-marginBottom: 12,
+padding: 12,
+borderRadius: 14,
+fontSize: 14,
 };
 
 const mainButtonStyle = {
 width: "100%",
-padding: "13px 18px",
-borderRadius: 12,
+padding: "14px 18px",
+borderRadius: 14,
 border: "none",
 color: "white",
 fontWeight: "bold",
@@ -777,8 +916,8 @@ fontSize: 15,
 
 const mainSmallButtonStyle = {
 width: "100%",
-padding: "10px 14px",
-borderRadius: 10,
+padding: "12px 14px",
+borderRadius: 14,
 border: "none",
 background: "#2563eb",
 color: "white",
@@ -788,8 +927,8 @@ cursor: "pointer",
 
 const secondaryButtonStyle = {
 width: "100%",
-padding: "10px 14px",
-borderRadius: 10,
+padding: "12px 14px",
+borderRadius: 14,
 border: "none",
 background: "#64748b",
 color: "white",
@@ -799,39 +938,27 @@ cursor: "pointer",
 
 const gridStyle = {
 display: "grid",
-gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-gap: 18,
+gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))",
+gap: 20,
 };
 
 const cardStyle = {
-border: "1px solid #e5e7eb",
-borderRadius: 18,
+border: "1px solid #e2e8f0",
+borderRadius: 24,
 padding: 18,
 background: "#ffffff",
 transition: "all 0.2s ease",
 };
 
-const descriptionTextStyle = {
-color: "#475569",
-fontSize: 14,
-lineHeight: 1.4,
-minHeight: 40,
-};
-
-const emptyStateStyle = {
-textAlign: "center",
-padding: 30,
-borderRadius: 18,
-background: "#f8fafc",
-color: "#64748b",
-marginTop: 10,
-marginBottom: 20,
+const rowBetweenStyle = {
+display: "flex",
+justifyContent: "space-between",
+alignItems: "center",
 };
 
 const categoryStyle = {
 display: "inline-block",
-marginBottom: 10,
-padding: "4px 10px",
+padding: "5px 12px",
 borderRadius: 999,
 background: "#e0f2fe",
 color: "#0369a1",
@@ -840,11 +967,17 @@ fontWeight: "bold",
 };
 
 const favoriteButtonStyle = {
-float: "right",
 border: "none",
 background: "transparent",
 cursor: "pointer",
 fontSize: 20,
+};
+
+const descriptionTextStyle = {
+color: "#475569",
+fontSize: 14,
+lineHeight: 1.5,
+minHeight: 44,
 };
 
 const priceStyle = {
@@ -856,8 +989,8 @@ fontSize: 18,
 
 const detailButtonStyle = {
 flex: 1,
-padding: "9px 10px",
-borderRadius: 8,
+padding: "10px",
+borderRadius: 12,
 border: "none",
 background: "#64748b",
 color: "white",
@@ -867,8 +1000,8 @@ fontWeight: "bold",
 
 const buyButtonStyle = {
 flex: 1,
-padding: "9px 10px",
-borderRadius: 8,
+padding: "10px",
+borderRadius: 12,
 border: "none",
 background: "#16a34a",
 color: "white",
@@ -878,8 +1011,8 @@ fontWeight: "bold",
 
 const deleteButtonStyle = {
 flex: 1,
-padding: "9px 10px",
-borderRadius: 8,
+padding: "10px",
+borderRadius: 12,
 border: "none",
 background: "#ef4444",
 color: "white",
@@ -890,7 +1023,7 @@ fontWeight: "bold",
 const buyLargeButtonStyle = {
 width: "100%",
 padding: "14px 18px",
-borderRadius: 12,
+borderRadius: 14,
 border: "none",
 background: "#16a34a",
 color: "white",
@@ -900,9 +1033,9 @@ fontSize: 16,
 };
 
 const fileBoxStyle = {
-marginBottom: 12,
-padding: 16,
-borderRadius: 14,
+marginBottom: 14,
+padding: 18,
+borderRadius: 18,
 background: "#f8fafc",
 textAlign: "center",
 border: "1px solid #e2e8f0",
@@ -910,13 +1043,22 @@ border: "1px solid #e2e8f0",
 
 const fileLinkStyle = {
 display: "inline-block",
-marginTop: 6,
-padding: "6px 12px",
-borderRadius: 8,
+marginTop: 8,
+padding: "8px 14px",
+borderRadius: 12,
 background: "#2563eb",
 color: "white",
 textDecoration: "none",
 fontSize: 13,
+fontWeight: "bold",
+};
+
+const emptyStateStyle = {
+textAlign: "center",
+padding: 28,
+borderRadius: 20,
+background: "#f8fafc",
+color: "#64748b",
 };
 
 const modalOverlayStyle = {
@@ -933,12 +1075,12 @@ zIndex: 1000,
 const modalStyle = {
 position: "relative",
 background: "white",
-width: "min(650px, 95vw)",
+width: "min(680px, 95vw)",
 maxHeight: "90vh",
 overflowY: "auto",
-padding: 30,
-borderRadius: 22,
-boxShadow: "0 20px 50px rgba(0,0,0,0.25)",
+padding: 32,
+borderRadius: 26,
+boxShadow: "0 22px 60px rgba(0,0,0,0.25)",
 };
 
 const closeButtonStyle = {
@@ -949,4 +1091,4 @@ border: "none",
 background: "transparent",
 fontSize: 30,
 cursor: "pointer",
-};
+}; 
